@@ -1,0 +1,22 @@
+id = "barsoom.claude-usage"
+name = "Claude Usage"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Show Claude 5h / weekly / Fable limit usage on claude agent rows in the sidebar"
+platforms = ["linux"]
+
+# Poll loop. Replaces its predecessor on live handoff, exits when the server's socket goes away.
+[[startup]]
+command = ["python3", "-m", "claude_usage.daemon"]
+
+# A newly detected agent gets its row without waiting out a poll interval.
+[[events]]
+on = "pane.agent_detected"
+command = ["python3", "-m", "claude_usage.refresh"]
+
+[[actions]]
+id = "refresh"
+title = "Refresh Claude usage"
+description = "Re-read every claude pane's limit usage now, bypassing the cache"
+contexts = ["workspace"]
+command = ["python3", "-m", "claude_usage.refresh", "--force"]
