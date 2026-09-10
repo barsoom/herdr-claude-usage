@@ -11,6 +11,8 @@ from .herdr import Herdr, default_bin_path
 from .refresh import build_cache, refresh_quietly, state_dir
 
 PIDFILE_NAME = "daemon.pid"
+LOGFILE_NAME = "daemon.log"
+MAX_LOG_BYTES = 1 << 20
 TAKEOVER_TIMEOUT_S = 2.0
 TAKEOVER_POLL_S = 0.1
 
@@ -80,25 +82,49 @@ def run_loop(tick, interval_seconds, should_continue, sleep=time.sleep, log=None
         sleep(interval_seconds)
 
 
-def _daemonize():
+def _detach_streams(log_path):
+    """Let go of Herdr's capture pipes, or Herdr waits forever for an EOF that never comes.
+
+    Herdr records a plugin command's completion once its output closes. A loop that keeps the
+    inherited stdout/stderr write ends open hangs Herdr on start, so both go to a log file in the
+    state dir instead — losing the diagnostics entirely would be the worse trade.
+    """
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(devnull, 0)
+    os.close(devnull)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.exists() and log_path.stat().st_size > MAX_LOG_BYTES:
+            log_path.unlink()
+        target = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    except OSError:
+        target = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(target, 1)
+    os.dup2(target, 2)
+    os.close(target)
+
+
+def _daemonize(log_path):
     """Double fork so the startup hook completes instead of hanging on us."""
     if os.fork() > 0:
         os._exit(0)
     os.setsid()
     if os.fork() > 0:
         os._exit(0)
-    devnull = os.open(os.devnull, os.O_RDWR)
-    os.dup2(devnull, 0)
+    _detach_streams(log_path)
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     env = os.environ
     cfg = config.load_from_env(env, log=_stderr)
+    state = state_dir(env)
     if "--foreground" not in argv:
-        _daemonize()
+        # Said on the pipe Herdr still captures, so `plugin log list` points at the real log.
+        _stderr(f"detaching; logging to {state / LOGFILE_NAME}")
+        _daemonize(state / LOGFILE_NAME)
 
-    pidfile = state_dir(env) / PIDFILE_NAME
+    pidfile = state / PIDFILE_NAME
     self_pid = os.getpid()
     replaced = takeover(pidfile, self_pid=self_pid)
     if replaced:

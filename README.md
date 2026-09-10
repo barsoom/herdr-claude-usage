@@ -136,6 +136,18 @@ Reported tokens carry a TTL of 2.5× the poll interval. That is deliberate: if t
 Herdr caps a token value at 80 characters. The renderer drops whole trailing segments to fit rather
 than truncating mid-word.
 
+## When Herdr hangs on start
+
+It should not any more, but the shape of that failure is worth knowing. Herdr records a plugin
+command's completion when its output closes, so a detached loop that keeps the inherited
+stdout/stderr open blocks startup. The daemon therefore redirects both to `daemon.log` in its state
+dir the moment it detaches. `plugin.disable` is a socket call and needs a running server, so if a
+plugin ever wedges startup, the server-less escape hatch is the registry:
+
+```bash
+mv ~/.config/herdr/plugins.json ~/.config/herdr/plugins.json.off   # then start Herdr and fix
+```
+
 ## When a row is empty
 
 - **No credentials in that config dir** — the token is cleared on purpose. An empty row beats a stale
@@ -144,9 +156,13 @@ than truncating mid-word.
 - **Anything else** — the plugin logs to stderr and Herdr keeps it:
 
 ```bash
-herdr plugin log list --plugin barsoom.claude-usage
-herdr pane get <pane_id>   # `tokens` shows what the sidebar is reading
+herdr plugin log list --plugin barsoom.claude-usage   # hooks and actions; also names the daemon log
+herdr pane get <pane_id>                              # `tokens` shows what the sidebar is reading
 ```
+
+The poll loop logs to `daemon.log` beside its pidfile in the plugin's state dir, since its own
+stdout and stderr have to be released for Herdr to start. The startup hook prints that path before
+detaching, so `plugin log list` tells you where to look.
 
 ## Development
 
@@ -154,7 +170,7 @@ herdr pane get <pane_id>   # `tokens` shows what the sidebar is reading
 python3 -m unittest discover -s tests -t .
 ```
 
-120 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
+123 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
 opener, `/proc`, the clock — is injected.
 
 ```
