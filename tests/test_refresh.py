@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from claude_usage import api, config, refresh
+from claude_usage import api, config, creds, refresh
 from claude_usage.herdr import Herdr, HerdrError
 from tests.support import FakeRunner, agent, envelope, process
 
@@ -40,7 +40,7 @@ class Pass(unittest.TestCase):
             env=env if env is not None else {},
             fetch=fetch,
             read_environ=kw.pop("read_environ", lambda pid, **_: None),
-            read_token=kw.pop("read_token", lambda d: tokens.get(str(d))),
+            read_token=kw.pop("read_token", lambda scope: tokens.get(str(scope.config_dir))),
             home=Path("/home/x"),
             now_ms=lambda: 1234,
             log=self.logged.append,
@@ -126,6 +126,22 @@ class Pass(unittest.TestCase):
         self.assertEqual(by_pane["w1:p1"], "claude_usage=5h 90% · 1w 91% · Fable 92%")
         self.assertEqual(by_pane["w1:p2"], "claude_usage=5h 14% · 1w 37% · Fable 36%")
 
+    def test_hands_the_loader_the_panes_own_keychain_identity(self):
+        """macOS reads the token by service name, so the scope must travel with the pane."""
+        runner = self.runner_with([agent("w1:p1")], processes={"w1:p1": [process(11)]})
+        seen = []
+        self.run_refresh(
+            runner,
+            read_environ=lambda pid, **_: {"CLAUDE_CONFIG_DIR": "/home/x/.claude-work", "USER": "ada"},
+            read_token=lambda scope: seen.append(scope) or None,
+        )
+        self.assertEqual(seen[0].config_dir, Path("/home/x/.claude-work"))
+        self.assertEqual(seen[0].keychain_account, "ada")
+        self.assertEqual(
+            seen[0].keychain_service,
+            "Claude Code-credentials-" + creds.scope_digest("/home/x/.claude-work"),
+        )
+
     def test_ignores_foreground_processes_that_are_not_claude(self):
         runner = self.runner_with(
             [agent("w1:p1")], processes={"w1:p1": [process(50, name="node", argv=["node", "x.js"])]}
@@ -210,7 +226,7 @@ class Caching(unittest.TestCase):
             cache=cache,
             fetch=fetch,
             read_environ=lambda pid, **_: None,
-            read_token=lambda d: "tok",
+            read_token=lambda scope: "tok",
             home=Path("/home/x"),
             now_ms=lambda: 1,
             force=force,

@@ -45,8 +45,8 @@ def pane_claude_pid(herdr, pane_id):
     return None
 
 
-def pane_config_dir(herdr, pane_id, env, read_environ, home=None):
-    """The pane's own CLAUDE_CONFIG_DIR when we can see it, else the plugin's, else ~/.claude."""
+def pane_scope(herdr, pane_id, env, read_environ, home=None, user=None):
+    """The pane's own Claude account when we can see it, else the plugin's, else ~/.claude."""
     proc_env = None
     try:
         pid = pane_claude_pid(herdr, pane_id)
@@ -54,7 +54,7 @@ def pane_config_dir(herdr, pane_id, env, read_environ, home=None):
         pid = None
     if pid is not None:
         proc_env = read_environ(pid)
-    return creds.resolve_config_dir(env=env, proc_env=proc_env, home=home)
+    return creds.resolve_scope(env=env, proc_env=proc_env, home=home, user=user)
 
 
 def refresh(
@@ -63,8 +63,8 @@ def refresh(
     env=None,
     cache=None,
     fetch=api.fetch_usage,
-    read_environ=procenv.read_proc_environ,
-    read_token=creds.read_access_token,
+    read_environ=procenv.read_environ,
+    read_token=creds.load_token,
     home=None,
     now_ms=None,
     force=False,
@@ -76,16 +76,14 @@ def refresh(
     now_ms = now_ms or (lambda: int(time.time() * 1000))
     seq = now_ms()
 
-    panes_by_dir = {}
+    by_scope = {}
     for pane_id in claude_pane_ids(herdr):
-        directory = pane_config_dir(herdr, pane_id, env, read_environ, home=home)
-        panes_by_dir.setdefault(str(directory), []).append(pane_id)
+        scope = pane_scope(herdr, pane_id, env, read_environ, home=home)
+        by_scope.setdefault(scope.key, (scope, []))[1].append(pane_id)
 
     reported = 0
-    for directory, pane_ids in panes_by_dir.items():
-        value = _token_value(
-            directory, config, cache, fetch, read_token, force=force, log=log
-        )
+    for scope, pane_ids in by_scope.values():
+        value = _token_value(scope, config, cache, fetch, read_token, force=force, log=log)
         for pane_id in pane_ids:
             try:
                 if value:
@@ -106,21 +104,21 @@ def refresh(
     return reported
 
 
-def _token_value(directory, config, cache, fetch, read_token, force, log):
+def _token_value(scope, config, cache, fetch, read_token, force, log):
     """A string to display, "" to clear the row, or None to leave whatever is there to expire."""
-    token = read_token(Path(directory))
+    token = read_token(scope)
     if not token:
-        log(f"{directory}: no Claude credentials, clearing the row")
+        log(f"{scope.key}: no Claude credentials, clearing the row")
         return ""
-    usage = None if force else (cache.get(directory) if cache else None)
+    usage = None if force else (cache.get(scope.key) if cache else None)
     if usage is None:
         try:
             usage = fetch(token)
         except api.UsageApiError as err:
-            log(f"{directory}: {err}")
+            log(f"{scope.key}: {err}")
             return None
         if cache:
-            cache.put(directory, usage)
+            cache.put(scope.key, usage)
     return render.render(limits.extract(usage), config.limits, separator=config.separator)
 
 

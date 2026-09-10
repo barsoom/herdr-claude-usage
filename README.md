@@ -13,24 +13,64 @@ Percent **used**, not left. Each pane reports the account it actually runs under
 different numbers. Unset falls back to `~/.claude`.
 
 Data comes from `GET https://api.anthropic.com/api/oauth/usage` — the same endpoint Claude Code's own
-`/usage` view reads — authenticated with the `claudeAiOauth.accessToken` already in that config dir's
-`.credentials.json`. Nothing is written to your Claude config, and no credential leaves your machine
-except to `api.anthropic.com`.
+`/usage` view reads — authenticated with the `claudeAiOauth.accessToken` Claude Code already stored:
+`<config dir>/.credentials.json` on Linux, the login keychain on macOS. Nothing is written to your
+Claude config, and no credential leaves your machine except to `api.anthropic.com`.
 
 ## Requirements
 
 - Herdr 0.9.0+
 - `python3` on `PATH` (stdlib only, no pip install; developed and tested against 3.10)
-- Linux. Two things are Linux-shaped: per-pane account detection reads `/proc/<pid>/environ`, and the
-  token is read from `.credentials.json`, which is where Claude Code keeps it on Linux. On macOS it
-  lives in the Keychain instead, so the manifest declares `platforms = ["linux"]` rather than
-  shipping a macOS claim that would render empty rows.
+- Linux or macOS
 
-## Install
+### macOS
+
+Claude Code keeps the OAuth token in the login keychain, not in `.credentials.json`, so the plugin
+reads it with `security find-generic-password` under the same service name Claude Code itself derives:
+`Claude Code-credentials` for the default scope, plus `-<sha256(setting)[:8]>` when `CLAUDE_CONFIG_DIR`
+(or `CLAUDE_SECURESTORAGE_CONFIG_DIR`) is set. Presence of the variable decides whether the digest is
+appended, not its value, and the digest covers the raw setting rather than an expanded path — that is
+what Claude Code does, and a mismatch means `security` finds nothing.
+
+The keychain item's ACL must allow `/usr/bin/security`. Claude Code reads it the same way, so if
+`/usr/login` works there it works here; if macOS prompts, allow it once.
+
+Per-pane account detection has no `/proc` to read, so it falls back to `ps -E`. That output is
+unquoted, so a `CLAUDE_CONFIG_DIR` containing spaces truncates and that pane's row clears rather than
+showing another account's numbers. Unset, or unreadable, falls back to the plugin's own scope.
+
+## Install from GitHub
+
+```bash
+herdr plugin install <owner>/herdr-claude-usage
+```
+
+Herdr clones the repo with `git`, shows a preview of the manifest and every command it will run, then
+registers it under Herdr-managed plugin data. Pin a revision with `--ref <tag-or-sha>`, or skip the
+prompt with `--yes` in a script. There are no `[[build]]` commands to run — the plugin is stdlib
+python with no dependencies.
+
+The repo must be public, and `herdr-plugin.toml` must sit at the repo root (it does) or in a
+subdirectory you name as `<owner>/<repo>/<subdir>`.
+
+Installing over a locally linked copy is refused, so unlink first if you linked one:
+
+```bash
+herdr plugin unlink barsoom.claude-usage
+```
+
+There is no `plugin update`; reinstall to refresh a managed checkout.
+
+## Install locally, for development
 
 ```bash
 herdr plugin link /path/to/herdr-claude-usage
 ```
+
+`link` registers the working tree in place and runs no build commands, so edits take effect on the
+next invocation. `herdr plugin unlink barsoom.claude-usage` unregisters it and leaves the files alone.
+
+## Wire up the sidebar
 
 Then add the token to your sidebar rows in `~/.config/herdr/config.toml`:
 
@@ -42,6 +82,8 @@ claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripp
 ```bash
 herdr server reload-config
 ```
+
+Rows only appear on panes Herdr detects as `claude`.
 
 The poll loop starts from the plugin's `[[startup]]` hook, which fires when a Herdr server starts or
 takes over — not when a plugin is linked. To fill the rows in the session you already have open:
@@ -112,21 +154,31 @@ herdr pane get <pane_id>   # `tokens` shows what the sidebar is reading
 python3 -m unittest discover -s tests -t .
 ```
 
-93 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
+120 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
 opener, `/proc`, the clock — is injected.
 
 ```
 herdr-plugin.toml
 claude_usage/
   config.py    defaults + config.json overlay
-  creds.py     config-dir resolution, access token
-  procenv.py   /proc/<pid>/environ
+  creds.py     account scope resolution, token from file or keychain
+  procenv.py   another process's environment (/proc on Linux, ps -E on macOS)
   api.py       the usage endpoint
   limits.py    usage JSON -> {label: percent}
   render.py    {label: percent} -> token value
   herdr.py     herdr CLI wrapper
   refresh.py   one pass over every claude pane
   daemon.py    poll loop, pidfile takeover, orphan guard
+```
+
+## Publishing
+
+Herdr's marketplace is an automatic index of public GitHub repos carrying the topic `herdr-plugin`
+whose `herdr-plugin.toml` parses. Add the topic and the repo shows up within about 30 minutes; no
+submission step:
+
+```bash
+gh repo edit <owner>/herdr-claude-usage --add-topic herdr-plugin
 ```
 
 Design notes: `docs/superpowers/specs/2026-09-10-herdr-claude-usage-design.md`.

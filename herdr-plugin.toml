@@ -3,7 +3,7 @@ name = "Claude Usage"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
 description = "Show Claude 5h / weekly / Fable limit usage on claude agent rows in the sidebar"
-platforms = ["linux"]
+platforms = ["linux", "macos"]
 
 # Poll loop. Replaces its predecessor on live handoff, exits when the server's socket goes away.
 [[startup]]

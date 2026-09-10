@@ -28,8 +28,8 @@ claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripp
 | module | purpose |
 | --- | --- |
 | `claude_usage/config.py` | defaults + `HERDR_PLUGIN_CONFIG_DIR/config.json` overlay |
-| `claude_usage/creds.py` | resolve config dir per pane, read `claudeAiOauth.accessToken` |
-| `claude_usage/procenv.py` | `/proc/<pid>/environ` reader (Linux only) |
+| `claude_usage/creds.py` | resolve the account scope per pane, read the token from file or keychain |
+| `claude_usage/procenv.py` | another process's environment: `/proc` on Linux, `ps -E` on macOS |
 | `claude_usage/api.py` | `GET api.anthropic.com/api/oauth/usage` |
 | `claude_usage/limits.py` | usage JSON -> `{label: percent}` |
 | `claude_usage/render.py` | `{label: percent}` -> token string |
@@ -51,13 +51,21 @@ touches the network or a live Herdr server.
    `/proc/<pid>/environ` -> `CLAUDE_CONFIG_DIR`. Falls back to the plugin's own environment, then
    `~/.claude`.
 
-   Linux only, declared as such in the manifest. Both halves of step 2 and step 4 are Linux-shaped:
-   `/proc/<pid>/environ` does not exist elsewhere, and macOS Claude Code keeps the token in the
-   Keychain rather than in `.credentials.json`. Supporting macOS means a `security find-generic-password`
-   fallback in `creds.py`; until that exists the manifest does not claim the platform.
+   macOS has no `/proc`, so it falls back to `ps -E -ww -o command=`. That output is unquoted, so a
+   value ends where the next `NAME=` begins; a config dir containing spaces truncates and the pane
+   clears its row instead of reporting another account.
 3. Group panes by resolved config dir. One HTTP call per distinct dir per tick, cached under
    `HERDR_PLUGIN_STATE_DIR` for the poll interval.
-4. `.credentials.json` -> `claudeAiOauth.accessToken`. Response `limits[]`: `session` -> `5h`,
+4. `claudeAiOauth.accessToken`, from `<config dir>/.credentials.json` on Linux. macOS keeps it in the
+   login keychain instead, read with `security find-generic-password -a <user> -w -s <service>`.
+   The service name has to be reproduced exactly or `security` finds nothing: `Claude Code-credentials`
+   for the default scope, and `Claude Code-credentials-<sha256(raw setting)[:8]>` whenever
+   `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR` is set. Presence of the variable decides
+   whether a digest is appended, not its value, and the digest covers the raw environment string
+   rather than an expanded path, because node never expands `~`. The file is tried first on both
+   platforms, since macOS users who disable keychain storage get the file.
+
+   Response `limits[]`: `session` -> `5h`,
    `weekly_all` -> `1w`, `weekly_scoped` -> `scope.model.display_name`. When `limits[]` is absent,
    fall back to the legacy top-level `five_hour` / `seven_day` / `seven_day_overage_included`
    `utilization` fields.
@@ -99,5 +107,6 @@ which has no `tomllib`.
 
 `python3 -m unittest discover -s tests`. Limit extraction including the legacy fallback and an
 absent Fable window, render truncation at the 80-char cap, config-dir precedence, credential
-parsing, `agent list` filtering, process-info -> pid, pidfile takeover, and a full refresh pass
-against a fake runner asserting the exact `report-metadata` argv.
+parsing, `agent list` filtering, process-info -> pid, pidfile takeover, keychain service naming
+against the scheme read out of Claude Code, `security` and `ps` output parsing, and a full refresh
+pass against a fake runner asserting the exact `report-metadata` argv.
