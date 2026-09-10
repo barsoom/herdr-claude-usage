@@ -84,43 +84,45 @@ class ServerAlive(unittest.TestCase):
 
 
 class RunLoop(unittest.TestCase):
-    def test_ticks_until_the_server_goes_away(self):
-        ticks = []
-        alive = iter([True, True, False])
-        daemon.run_loop(
-            tick=lambda: ticks.append(1),
-            interval_seconds=60,
-            should_continue=lambda: next(alive, False),
-            sleep=lambda _: None,
-        )
-        self.assertEqual(len(ticks), 2)
+    def run_loop(self, *, interval, slice_seconds, stop_after_sleeps, tick=None, log=None):
+        """Driven off sleep count, so a test says how far into the interval the server dies."""
+        self.slept = []
+        self.ticks = []
 
-    def test_sleeps_the_configured_interval(self):
-        slept = []
-        alive = iter([True, False])
         daemon.run_loop(
-            tick=lambda: None,
-            interval_seconds=90,
-            should_continue=lambda: next(alive, False),
-            sleep=slept.append,
+            tick=tick or (lambda: self.ticks.append(1)),
+            interval_seconds=interval,
+            should_continue=lambda: len(self.slept) < stop_after_sleeps,
+            sleep=self.slept.append,
+            slice_seconds=slice_seconds,
+            log=log,
         )
-        self.assertEqual(slept, [90])
+
+    def test_ticks_once_per_interval(self):
+        self.run_loop(interval=10, slice_seconds=10, stop_after_sleeps=2)
+        self.assertEqual(len(self.ticks), 2)
+
+    def test_does_not_tick_at_all_once_the_server_is_gone(self):
+        self.run_loop(interval=10, slice_seconds=10, stop_after_sleeps=0)
+        self.assertEqual(self.ticks, [])
+
+    def test_sleeps_the_configured_interval_in_slices(self):
+        self.run_loop(interval=90, slice_seconds=5, stop_after_sleeps=18)
+        self.assertEqual(sum(self.slept), 90)
+        self.assertEqual(max(self.slept), 5)
+
+    def test_a_long_interval_cannot_delay_the_orphan_guard(self):
+        """An hourly poll must not keep a dead server's loop alive for an hour."""
+        self.run_loop(interval=3600, slice_seconds=5, stop_after_sleeps=1)
+        self.assertEqual(self.slept, [5])
+        self.assertEqual(len(self.ticks), 1)
 
     def test_a_failing_tick_does_not_end_the_loop(self):
-        ticks = []
-        alive = iter([True, True, False])
-
         def tick():
-            ticks.append(1)
+            self.ticks.append(1)
             raise RuntimeError("transient")
 
         logged = []
-        daemon.run_loop(
-            tick=tick,
-            interval_seconds=1,
-            should_continue=lambda: next(alive, False),
-            sleep=lambda _: None,
-            log=logged.append,
-        )
-        self.assertEqual(len(ticks), 2)
+        self.run_loop(interval=1, slice_seconds=1, stop_after_sleeps=2, tick=tick, log=logged.append)
+        self.assertEqual(len(self.ticks), 2)
         self.assertTrue(logged)

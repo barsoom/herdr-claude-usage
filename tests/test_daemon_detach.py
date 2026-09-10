@@ -34,13 +34,17 @@ class StartupHookReleasesItsPipes(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         # A socket path that exists, so the loop does not exit before we can look at it.
         (self.state / "fake.sock").touch()
-        (self.state / "config.json").write_text('{"interval_seconds": 3600}', encoding="utf-8")
-        self.daemon_pid = None
+        (self.state / "config.json").write_text('{"interval_seconds": 15}', encoding="utf-8")
         self.addCleanup(self.stop_daemon)
 
     def stop_daemon(self):
-        if self.daemon_pid and alive(self.daemon_pid):
-            os.kill(self.daemon_pid, signal.SIGTERM)
+        """Reads the pidfile itself: relying on a test body to record the pid leaks daemons."""
+        pid = self.read_pid(timeout_s=2)
+        if pid and alive(pid):
+            os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and alive(pid):
+                time.sleep(0.05)
 
     def spawn(self):
         env = dict(os.environ)
@@ -78,7 +82,6 @@ class StartupHookReleasesItsPipes(unittest.TestCase):
             stdout, stderr = proc.communicate(timeout=PIPE_CLOSE_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             proc.kill()
-            self.daemon_pid = self.read_pid(timeout_s=1)
             self.fail("startup hook never closed its pipes; Herdr would hang on start")
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(stdout, "")
@@ -88,15 +91,15 @@ class StartupHookReleasesItsPipes(unittest.TestCase):
     def test_the_loop_outlives_the_hook(self):
         proc = self.spawn()
         proc.communicate(timeout=PIPE_CLOSE_TIMEOUT_S)
-        self.daemon_pid = self.read_pid()
-        self.assertIsNotNone(self.daemon_pid, "no pidfile was written")
-        self.assertNotEqual(self.daemon_pid, proc.pid)
-        self.assertTrue(alive(self.daemon_pid), "the detached loop died with its parent")
+        pid = self.read_pid()
+        self.assertIsNotNone(pid, "no pidfile was written")
+        self.assertNotEqual(pid, proc.pid)
+        self.assertTrue(alive(pid), "the detached loop died with its parent")
 
     def test_diagnostics_land_in_the_state_directory_instead_of_being_lost(self):
         proc = self.spawn()
         proc.communicate(timeout=PIPE_CLOSE_TIMEOUT_S)
-        self.daemon_pid = self.read_pid()
+        self.read_pid()
         log = self.state / "daemon.log"
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:

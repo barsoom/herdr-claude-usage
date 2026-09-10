@@ -13,6 +13,8 @@ from .refresh import build_cache, refresh_quietly, state_dir
 PIDFILE_NAME = "daemon.pid"
 LOGFILE_NAME = "daemon.log"
 MAX_LOG_BYTES = 1 << 20
+# Upper bound on how long an orphaned loop can outlive its server, whatever the poll interval.
+SLEEP_SLICE_S = 5.0
 TAKEOVER_TIMEOUT_S = 2.0
 TAKEOVER_POLL_S = 0.1
 
@@ -72,14 +74,34 @@ def server_alive(env=None):
     return Path(socket_path).exists()
 
 
-def run_loop(tick, interval_seconds, should_continue, sleep=time.sleep, log=None):
+def _nap(interval_seconds, should_continue, sleep, slice_seconds):
+    """Sleep the interval in slices, so a long interval cannot delay the orphan guard."""
+    remaining = interval_seconds
+    while remaining > 0:
+        nap = min(slice_seconds, remaining)
+        sleep(nap)
+        remaining -= nap
+        if not should_continue():
+            return False
+    return True
+
+
+def run_loop(
+    tick,
+    interval_seconds,
+    should_continue,
+    sleep=time.sleep,
+    log=None,
+    slice_seconds=SLEEP_SLICE_S,
+):
     log = log or _stderr
     while should_continue():
         try:
             tick()
         except Exception as err:  # a transient failure must not end the loop
             log(f"tick failed: {err}")
-        sleep(interval_seconds)
+        if not _nap(interval_seconds, should_continue, sleep, slice_seconds):
+            return
 
 
 def _detach_streams(log_path):
