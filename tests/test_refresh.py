@@ -1,7 +1,10 @@
+import tempfile
 import unittest
 from pathlib import Path
 
 from claude_usage import api, config, creds, refresh
+from claude_usage.cache import UsageCache
+from claude_usage.gate import RetryGate
 from claude_usage.herdr import Herdr, HerdrError
 from tests.support import FakeRunner, agent, envelope, process
 
@@ -203,7 +206,7 @@ class Caching(unittest.TestCase):
             self.store = dict(seeded or {})
             self.puts = []
 
-        def get(self, key):
+        def get(self, key, ttl_ms=None):
             return self.store.get(key)
 
         def put(self, key, value):
@@ -267,16 +270,11 @@ class BarsStyle(PaneCase):
         self.assertEqual(report[report.index("--token") + 1], f"claude_usage={expected}")
 
 
-class RateLimited(PaneCase):
-    """429 is the normal weather on this endpoint: the row must survive it, and back off."""
+class StatefulCase(PaneCase):
+    """Real cache and gate over a temp dir, on a clock the test moves. Holds no tests itself."""
 
     def setUp(self):
         super().setUp()
-        import tempfile
-
-        from claude_usage.cache import UsageCache
-        from claude_usage.gate import RetryGate
-
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.now = 1_000_000
@@ -304,62 +302,119 @@ class RateLimited(PaneCase):
         report = self.reports(runner)[0]
         return report[report.index("--token") + 1]
 
+    def working(self, *pane_ids):
+        """Panes on the working cadence, so a test about fetching actually fetches."""
+        return self.runner_with([agent(p, agent_status="working") for p in pane_ids or ("w1:p1",)])
+
+
+class RateLimited(StatefulCase):
+    """429 is the normal weather on this endpoint: the row must survive it, and back off."""
+
     def test_a_failed_fetch_keeps_showing_the_last_good_value(self):
         self.seed(session=1, weekly=2, fable=3)
         self.now += self.cfg.cache_ttl_ms + 1
-        runner = self.runner_with([agent("w1:p1")])
+        runner = self.working()
         self.assertEqual(self.run_refresh(runner, usages=self.rate_limited()), 1)
         self.assertEqual(self.token_of(runner), "claude_usage=5h 1% · 1w 2% · Fable 3%")
 
     def test_a_value_too_old_to_trust_is_left_to_expire(self):
         self.seed()
         self.now += self.cfg.max_stale_ms + 1
-        runner = self.runner_with([agent("w1:p1")])
+        runner = self.working()
         self.run_refresh(runner, usages=self.rate_limited())
         self.assertEqual(self.reports(runner), [])
 
     def test_a_failure_with_nothing_cached_leaves_the_row_to_expire(self):
-        runner = self.runner_with([agent("w1:p1")])
+        runner = self.working()
         self.run_refresh(runner, usages=self.rate_limited())
         self.assertEqual(self.reports(runner), [])
 
     def test_a_failure_holds_off_the_next_request(self):
-        runner = self.runner_with([agent("w1:p1")])
+        runner = self.working()
         self.run_refresh(runner, usages=self.rate_limited())
         self.now += self.cfg.backoff_base_ms - 1
-        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.run_refresh(self.working(), usages=self.rate_limited())
         self.assertEqual(len(self.fetched), 1)
 
     def test_the_hold_off_expires(self):
-        runner = self.runner_with([agent("w1:p1")])
+        runner = self.working()
         self.run_refresh(runner, usages=self.rate_limited())
         self.now += self.cfg.backoff_base_ms + 1
-        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.run_refresh(self.working(), usages=self.rate_limited())
         self.assertEqual(len(self.fetched), 2)
 
     def test_a_success_lifts_the_hold_off(self):
-        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.run_refresh(self.working(), usages=self.rate_limited())
         self.now += self.cfg.backoff_base_ms + 1
-        self.run_refresh(self.runner_with([agent("w1:p1")]))
+        self.run_refresh(self.working())
         self.now += self.cfg.cache_ttl_ms + 1
-        self.run_refresh(self.runner_with([agent("w1:p1")]))
+        self.run_refresh(self.working())
         self.assertEqual(len(self.fetched), 3)
 
     def test_the_manual_action_ignores_the_hold_off(self):
         """User-initiated, so it is allowed to spend the one request the backoff was saving."""
-        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
-        self.run_refresh(self.runner_with([agent("w1:p1")]), force=True)
+        self.run_refresh(self.working(), usages=self.rate_limited())
+        self.run_refresh(self.working(), force=True)
         self.assertEqual(len(self.fetched), 2)
 
     def test_a_held_off_scope_still_serves_its_cached_value(self):
         self.seed(session=4, weekly=5, fable=6)
-        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.run_refresh(self.working(), usages=self.rate_limited())
         self.now += self.cfg.cache_ttl_ms + 1
-        runner = self.runner_with([agent("w1:p1")])
+        runner = self.working()
         self.run_refresh(runner, usages=self.rate_limited())
         self.assertEqual(len(self.fetched), 1)
         self.assertEqual(self.token_of(runner), "claude_usage=5h 4% · 1w 5% · Fable 6%")
 
     def test_the_backoff_delay_is_logged(self):
-        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.run_refresh(self.working(), usages=self.rate_limited())
         self.assertTrue(any("429" in line and "retrying" in line for line in self.logged))
+
+
+class Cadence(StatefulCase):
+    """An idle pane is not spending limit, so its account does not need the working cadence."""
+
+    def stale_by_one_interval(self):
+        self.seed()
+        self.now += self.cfg.cache_ttl_ms + 1
+
+    def test_an_idle_pane_does_not_spend_a_request(self):
+        self.stale_by_one_interval()
+        runner = self.runner_with([agent("w1:p1", agent_status="idle")])
+        self.assertEqual(self.run_refresh(runner), 1)
+        self.assertEqual(self.fetched, [])
+        self.assertTrue(self.token_of(runner))
+
+    def test_a_working_pane_keeps_the_full_cadence(self):
+        self.stale_by_one_interval()
+        self.run_refresh(self.runner_with([agent("w1:p1", agent_status="working")]))
+        self.assertEqual(self.fetched, ["tok"])
+
+    def test_one_working_pane_refreshes_the_whole_account(self):
+        self.stale_by_one_interval()
+        agents = [agent("w1:p1", agent_status="idle"), agent("w1:p2", agent_status="working")]
+        self.run_refresh(self.runner_with(agents))
+        self.assertEqual(self.fetched, ["tok"])
+
+    def test_a_row_carrying_no_status_keeps_the_full_cadence(self):
+        """Herdr older than agent_status: fall back to the cadence this plugin always had."""
+        self.stale_by_one_interval()
+        row = agent("w1:p1")
+        row.pop("agent_status")
+        self.run_refresh(self.runner_with([row]))
+        self.assertEqual(self.fetched, ["tok"])
+
+    def test_an_idle_account_is_still_polled_eventually(self):
+        self.seed()
+        self.now += self.cfg.idle_ttl_ms + 1
+        self.run_refresh(self.runner_with([agent("w1:p1", agent_status="idle")]))
+        self.assertEqual(self.fetched, ["tok"])
+
+    def test_an_idle_pane_with_nothing_cached_is_polled_at_once(self):
+        self.run_refresh(self.runner_with([agent("w1:p1", agent_status="idle")]))
+        self.assertEqual(self.fetched, ["tok"])
+
+    def test_the_manual_action_ignores_the_idle_cadence(self):
+        self.stale_by_one_interval()
+        self.run_refresh(self.runner_with([agent("w1:p1", agent_status="idle")]), force=True)
+        self.assertEqual(self.fetched, ["tok"])

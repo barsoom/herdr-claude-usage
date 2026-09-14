@@ -11,6 +11,9 @@ from .gate import RetryGate
 from .herdr import Herdr, HerdrError, default_bin_path
 
 CLAUDE_AGENT = "claude"
+# Only a working pane is spending limit. An unrecognised status reads as idle: the slow cadence and
+# the manual action are a safer place to land than polling every account on the machine at full rate.
+WORKING_STATUS = "working"
 SOURCE_ID = config.SOURCE_ID
 CACHE_DIR_NAME = "cache"
 GATE_DIR_NAME = "gate"
@@ -20,15 +23,18 @@ def _stderr(message):
     print(f"claude-usage: {message}", file=sys.stderr)
 
 
-def claude_pane_ids(herdr):
-    ids = []
+def claude_panes(herdr):
+    """(pane_id, working) per claude pane. A row with no status at all predates agent_status."""
+    panes = []
     for row in herdr.agent_list():
         if not isinstance(row, dict) or row.get("agent") != CLAUDE_AGENT:
             continue
         pane_id = row.get("pane_id")
-        if isinstance(pane_id, str) and pane_id:
-            ids.append(pane_id)
-    return ids
+        if not isinstance(pane_id, str) or not pane_id:
+            continue
+        status = row.get("agent_status")
+        panes.append((pane_id, status is None or status == WORKING_STATUS))
+    return panes
 
 
 def _is_claude(process):
@@ -80,13 +86,18 @@ def refresh(
     seq = now_ms()
 
     by_scope = {}
-    for pane_id in claude_pane_ids(herdr):
+    for pane_id, working in claude_panes(herdr):
         scope = pane_scope(herdr, pane_id, env, read_environ, home=home)
-        by_scope.setdefault(scope.key, (scope, []))[1].append(pane_id)
+        entry = by_scope.setdefault(scope.key, [scope, [], False])
+        entry[1].append(pane_id)
+        entry[2] = entry[2] or working
 
     reported = 0
-    for scope, pane_ids in by_scope.values():
-        value = _token_value(scope, config, cache, fetch, read_token, force=force, log=log, gate=gate)
+    for scope, pane_ids, working in by_scope.values():
+        max_age_ms = config.cache_ttl_ms if working else config.idle_ttl_ms
+        value = _token_value(
+            scope, config, cache, fetch, read_token, force=force, log=log, gate=gate, max_age_ms=max_age_ms
+        )
         for pane_id in pane_ids:
             try:
                 if value:
@@ -107,13 +118,13 @@ def refresh(
     return reported
 
 
-def _token_value(scope, config, cache, fetch, read_token, force, log, gate=None):
+def _token_value(scope, config, cache, fetch, read_token, force, log, gate=None, max_age_ms=None):
     """A string to display, "" to clear the row, or None to leave whatever is there to expire."""
     token = read_token(scope)
     if not token:
         log(f"{scope.key}: no Claude credentials, clearing the row")
         return ""
-    usage = None if force else (cache.get(scope.key) if cache else None)
+    usage = None if force else (cache.get(scope.key, ttl_ms=max_age_ms) if cache else None)
     if usage is None:
         held_off = gate is not None and not force and gate.blocked(scope.key)
         if held_off:

@@ -126,6 +126,10 @@ that — a 5 minute interval, and three things the plugin does when a request fa
 | serves stale | The row keeps its last known numbers for `max_stale_seconds` instead of blanking, then stops renewing and lets the TTL retire it. |
 | stays put | The backoff is on disk, per account, so the event hook and the action inherit it instead of each spending a fresh request. |
 
+An account whose panes are all idle is polled every `idle_interval_seconds` instead — an idle agent
+spends no limit, so there is nothing to re-read. One pane going `working` puts the whole account back
+on `interval_seconds`. A row Herdr reports without an `agent_status` counts as working.
+
 The `refresh` action ignores the backoff: it is user-initiated, and one deliberate request is the
 point of it. Lower `interval_seconds` at your own risk — it is also the backoff's first step.
 
@@ -136,6 +140,7 @@ point of it. Lower `interval_seconds` at your own risk — it is also the backof
 ```json
 {
   "interval_seconds": 300,
+  "idle_interval_seconds": 900,
   "limits": ["5h", "1w", "Fable"],
   "separator": " · ",
   "token_name": "claude_usage",
@@ -147,6 +152,8 @@ point of it. Lower `interval_seconds` at your own risk — it is also the backof
 ```
 
 - `interval_seconds` — poll interval, clamped to 60..3600. Also the first backoff step.
+- `idle_interval_seconds` — poll interval for an account with no working pane, clamped to 60..86400.
+  Never faster than `interval_seconds`.
 - `backoff_max_seconds` — ceiling on the doubling backoff after a failed request, clamped to
   60..21600. Never shorter than one interval.
 - `max_stale_seconds` — how long a rate-limited row keeps showing its last known numbers, clamped to
@@ -221,7 +228,7 @@ detaching, so `plugin log list` tells you where to look.
 python3 -m unittest discover -s tests -t .
 ```
 
-180 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
+190 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
 opener, `/proc`, the clock — is injected.
 
 ```

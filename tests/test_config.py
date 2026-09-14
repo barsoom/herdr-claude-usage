@@ -139,3 +139,15 @@ class RateLimitDefaults(unittest.TestCase):
         path = Path(tmp.name) / "config.json"
         path.write_text(json.dumps(raw), encoding="utf-8")
         return config.load(Path(tmp.name))
+
+    def test_an_idle_account_gets_a_slower_cadence(self):
+        cfg = config.load(None)
+        self.assertEqual(cfg.idle_interval_seconds, 900)
+        self.assertEqual(cfg.idle_ttl_ms, 900_000)
+
+    def test_the_idle_cadence_is_never_faster_than_the_poll_interval(self):
+        cfg = config.Config(interval_seconds=3600, idle_interval_seconds=60)
+        self.assertEqual(cfg.idle_ttl_ms, 3_600_000)
+
+    def test_the_idle_cadence_is_read_and_clamped(self):
+        self.assertEqual(self.loaded({"idle_interval_seconds": 99_999_999}).idle_interval_seconds, 86_400)

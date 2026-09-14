@@ -13,6 +13,10 @@ SOURCE_ID = "barsoom.claude-usage"
 DEFAULT_INTERVAL_SECONDS = 300
 MIN_INTERVAL_SECONDS = 60
 MAX_INTERVAL_SECONDS = 3600
+# An idle pane spends no limit, so its account is polled at this slower cadence instead.
+DEFAULT_IDLE_INTERVAL_SECONDS = 900
+MIN_IDLE_INTERVAL_SECONDS = 60
+MAX_IDLE_INTERVAL_SECONDS = 86_400
 DEFAULT_BACKOFF_MAX_SECONDS = 1800
 MIN_BACKOFF_MAX_SECONDS = 60
 MAX_BACKOFF_MAX_SECONDS = 21_600
@@ -45,6 +49,7 @@ class Config:
     token_name: str = DEFAULT_TOKEN_NAME
     style: str = DEFAULT_STYLE
     bar_width: int = DEFAULT_BAR_WIDTH
+    idle_interval_seconds: int = DEFAULT_IDLE_INTERVAL_SECONDS
     backoff_max_seconds: int = DEFAULT_BACKOFF_MAX_SECONDS
     max_stale_seconds: int = DEFAULT_MAX_STALE_SECONDS
 
@@ -56,6 +61,10 @@ class Config:
     @property
     def cache_ttl_ms(self):
         return self.interval_seconds * 1000
+
+    @property
+    def idle_ttl_ms(self):
+        return max(self.idle_interval_seconds * 1000, self.cache_ttl_ms)
 
     @property
     def backoff_base_ms(self):
@@ -115,6 +124,10 @@ def load(config_dir, log=None):
     bar_width = raw.get("bar_width")
     if isinstance(bar_width, int) and not isinstance(bar_width, bool):
         cfg.bar_width = _clamp(bar_width, MIN_BAR_WIDTH, MAX_BAR_WIDTH)
+
+    idle = raw.get("idle_interval_seconds")
+    if isinstance(idle, int) and not isinstance(idle, bool):
+        cfg.idle_interval_seconds = _clamp(idle, MIN_IDLE_INTERVAL_SECONDS, MAX_IDLE_INTERVAL_SECONDS)
 
     backoff = raw.get("backoff_max_seconds")
     if isinstance(backoff, int) and not isinstance(backoff, bool):
