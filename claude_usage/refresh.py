@@ -119,7 +119,7 @@ def _token_value(scope, config, cache, fetch, read_token, force, log):
             return None
         if cache:
             cache.put(scope.key, usage)
-    return render.render(limits.extract(usage), config.limits, separator=config.separator)
+    return render.render(limits.extract(usage), config.limits, config)
 
 
 def refresh_quietly(herdr, config, env=None, log=None, **kwargs):

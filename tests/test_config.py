@@ -61,3 +61,46 @@ class Load(unittest.TestCase):
     def test_limits_entries_must_be_strings(self):
         self.write({"limits": ["5h", 7]})
         self.assertEqual(config.load(self.dir).limits, ["5h", "1w", "Fable"])
+
+
+class Style(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, payload):
+        (self.dir / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_defaults_to_text_style(self):
+        cfg = config.load(self.dir)
+        self.assertEqual(cfg.style, config.STYLE_TEXT)
+        self.assertEqual(cfg.bar_width, config.DEFAULT_BAR_WIDTH)
+
+    def test_accepts_the_bars_style(self):
+        self.write({"style": "bars"})
+        self.assertEqual(config.load(self.dir).style, config.STYLE_BARS)
+
+    def test_unknown_style_falls_back_to_text(self):
+        self.write({"style": "sparkline"})
+        self.assertEqual(config.load(self.dir).style, config.STYLE_TEXT)
+
+    def test_wrongly_typed_style_falls_back_to_text(self):
+        self.write({"style": 2})
+        self.assertEqual(config.load(self.dir).style, config.STYLE_TEXT)
+
+    def test_overrides_bar_width(self):
+        self.write({"bar_width": 16})
+        self.assertEqual(config.load(self.dir).bar_width, 16)
+
+    def test_clamps_bar_width_to_bounds(self):
+        self.write({"bar_width": 0})
+        self.assertEqual(config.load(self.dir).bar_width, config.MIN_BAR_WIDTH)
+        self.write({"bar_width": 999})
+        self.assertEqual(config.load(self.dir).bar_width, config.MAX_BAR_WIDTH)
+
+    def test_wrongly_typed_bar_width_falls_back_to_default(self):
+        self.write({"bar_width": True})
+        self.assertEqual(config.load(self.dir).bar_width, config.DEFAULT_BAR_WIDTH)
+        self.write({"bar_width": "wide"})
+        self.assertEqual(config.load(self.dir).bar_width, config.DEFAULT_BAR_WIDTH)

@@ -14,6 +14,13 @@ MAX_INTERVAL_SECONDS = 3600
 DEFAULT_LIMITS = ["5h", "1w", "Fable"]
 DEFAULT_SEPARATOR = " · "
 DEFAULT_TOKEN_NAME = "claude_usage"
+STYLE_TEXT = "text"
+STYLE_BARS = "bars"
+STYLES = (STYLE_TEXT, STYLE_BARS)
+DEFAULT_STYLE = STYLE_TEXT
+DEFAULT_BAR_WIDTH = 10
+MIN_BAR_WIDTH = 1
+MAX_BAR_WIDTH = 40
 
 # Herdr rejects a --ttl-ms outside 1..86400000.
 MAX_TTL_MS = 86_400_000
@@ -27,6 +34,8 @@ class Config:
     limits: list = field(default_factory=lambda: list(DEFAULT_LIMITS))
     separator: str = DEFAULT_SEPARATOR
     token_name: str = DEFAULT_TOKEN_NAME
+    style: str = DEFAULT_STYLE
+    bar_width: int = DEFAULT_BAR_WIDTH
 
     @property
     def ttl_ms(self):
@@ -74,6 +83,14 @@ def load(config_dir, log=None):
     token_name = raw.get("token_name")
     if isinstance(token_name, str) and token_name.strip():
         cfg.token_name = token_name.strip()
+
+    style = raw.get("style")
+    if style in STYLES:
+        cfg.style = style
+
+    bar_width = raw.get("bar_width")
+    if isinstance(bar_width, int) and not isinstance(bar_width, bool):
+        cfg.bar_width = _clamp(bar_width, MIN_BAR_WIDTH, MAX_BAR_WIDTH)
 
     return cfg
 

@@ -122,7 +122,9 @@ Reported tokens carry a TTL of 2.5× the poll interval. That is deliberate: if t
   "interval_seconds": 60,
   "limits": ["5h", "1w", "Fable"],
   "separator": " · ",
-  "token_name": "claude_usage"
+  "token_name": "claude_usage",
+  "style": "text",
+  "bar_width": 10
 }
 ```
 
@@ -132,9 +134,36 @@ Reported tokens carry a TTL of 2.5× the poll interval. That is deliberate: if t
   per-model caps can ask for `"Opus"` or `"Sonnet"`. Windows your account does not have are dropped
   from the string.
 - `token_name` — rename if you want a different `$token` in your row config.
+- `style` — `"text"` (default) or `"bars"`. See below.
+- `bar_width` — bar length in characters, clamped to 1..40. `"bars"` only.
 
-Herdr caps a token value at 80 characters. The renderer drops whole trailing segments to fit rather
-than truncating mid-word.
+Herdr caps a token value at 80 characters. The text renderer drops whole trailing segments to fit
+rather than truncating mid-word.
+
+### `"style": "bars"`
+
+80 characters is Herdr's cap on a token *value*, not the visible width of the sidebar's agent-row
+column — that is nearer 22 characters at regular width, 32 at Herdr's widest, and Herdr exposes it
+to plugins nowhere. So the text form overflows and gets truncated mid-word before the drop logic
+ever fires. `"bars"` stacks the same numbers into one glyph instead:
+
+```
+  claude   ██🬹🬓      ▏
+```
+
+Three limits, one per dot-row of a Unicode sextant (2 dot-columns × 3 dot-rows per character), in
+`limits` order: first on top, second in the middle, third on the bottom. Limits your account does
+not have are skipped rather than left blank, and anything past the third present limit is dropped —
+there are only three rows. Row identity is position, not a label; that is the whole point of the
+format.
+
+`bar_width` characters is `bar_width * 2` steps of resolution — 20 steps, one dot per 5%, at the
+default 10. The trailing `▏` is a fixed marker for the 100% edge, one per token rather than per row:
+Herdr's token schema is a plain string with no color, so the unfilled remainder cannot be darkened
+instead.
+
+Needs a font with the Legacy Computing block (`U+1FB00`). Developed against Ghostty with
+Inconsolata plus Ghostty's built-in Symbols Nerd Font.
 
 ## When Herdr hangs on start
 
@@ -170,7 +199,7 @@ detaching, so `plugin log list` tells you where to look.
 python3 -m unittest discover -s tests -t .
 ```
 
-123 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
+151 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
 opener, `/proc`, the clock — is injected.
 
 ```
@@ -181,7 +210,7 @@ claude_usage/
   procenv.py   another process's environment (/proc on Linux, ps -E on macOS)
   api.py       the usage endpoint
   limits.py    usage JSON -> {label: percent}
-  render.py    {label: percent} -> token value
+  render.py    {label: percent} -> token value, text or sextant bars
   herdr.py     herdr CLI wrapper
   refresh.py   one pass over every claude pane
   daemon.py    poll loop, pidfile takeover, orphan guard

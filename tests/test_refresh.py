@@ -17,7 +17,9 @@ def usage(session=14, weekly=37, fable=36):
     return {"limits": rows}
 
 
-class Pass(unittest.TestCase):
+class PaneCase(unittest.TestCase):
+    """Setup and fakes shared by the style-specific passes. Holds no tests itself."""
+
     def setUp(self):
         self.cfg = config.load(None)
         self.fetched = []
@@ -75,6 +77,8 @@ class Pass(unittest.TestCase):
     def reports(self, runner):
         return runner.calls_matching("herdr", "pane", "report-metadata")
 
+
+class Pass(PaneCase):
     def test_reports_the_rendered_token_on_every_claude_pane(self):
         runner = self.runner_with([agent("w1:p1"), agent("w1:p2")])
         self.assertEqual(self.run_refresh(runner), 2)
@@ -246,3 +250,18 @@ class Caching(unittest.TestCase):
     def test_force_bypasses_the_cache(self):
         self.run_refresh(self.Cache({"/home/x/.claude": usage()}), force=True)
         self.assertEqual(self.fetched, ["tok"])
+
+
+class BarsStyle(PaneCase):
+    def setUp(self):
+        super().setUp()
+        self.cfg = config.Config(style=config.STYLE_BARS, bar_width=8)
+
+    def test_reports_the_bar_token_when_the_style_asks_for_bars(self):
+        from claude_usage import limits, render
+
+        runner = self.runner_with([agent("w1:p1")])
+        self.assertEqual(self.run_refresh(runner), 1)
+        report = self.reports(runner)[0]
+        expected = render.render_bars(limits.extract(usage()), self.cfg.limits, 8)
+        self.assertEqual(report[report.index("--token") + 1], f"claude_usage={expected}")
