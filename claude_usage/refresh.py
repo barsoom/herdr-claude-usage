@@ -7,11 +7,13 @@ from pathlib import Path
 
 from . import api, config, creds, limits, procenv, render
 from .cache import UsageCache
+from .gate import RetryGate
 from .herdr import Herdr, HerdrError, default_bin_path
 
 CLAUDE_AGENT = "claude"
 SOURCE_ID = config.SOURCE_ID
 CACHE_DIR_NAME = "cache"
+GATE_DIR_NAME = "gate"
 
 
 def _stderr(message):
@@ -69,6 +71,7 @@ def refresh(
     now_ms=None,
     force=False,
     log=None,
+    gate=None,
 ):
     """Returns how many panes now carry a usage token. Never raises for a single bad pane."""
     env = os.environ if env is None else env
@@ -83,7 +86,7 @@ def refresh(
 
     reported = 0
     for scope, pane_ids in by_scope.values():
-        value = _token_value(scope, config, cache, fetch, read_token, force=force, log=log)
+        value = _token_value(scope, config, cache, fetch, read_token, force=force, log=log, gate=gate)
         for pane_id in pane_ids:
             try:
                 if value:
@@ -104,7 +107,7 @@ def refresh(
     return reported
 
 
-def _token_value(scope, config, cache, fetch, read_token, force, log):
+def _token_value(scope, config, cache, fetch, read_token, force, log, gate=None):
     """A string to display, "" to clear the row, or None to leave whatever is there to expire."""
     token = read_token(scope)
     if not token:
@@ -112,13 +115,34 @@ def _token_value(scope, config, cache, fetch, read_token, force, log):
         return ""
     usage = None if force else (cache.get(scope.key) if cache else None)
     if usage is None:
+        held_off = gate is not None and not force and gate.blocked(scope.key)
+        if held_off:
+            # Silent: a logged line per tick would be the same noise the backoff exists to stop.
+            return _stale_value(scope, config, cache)
         try:
             usage = fetch(token)
         except api.UsageApiError as err:
-            log(f"{scope.key}: {err}")
-            return None
+            delay_ms = gate.penalize(scope.key) if gate is not None else 0
+            log(f"{scope.key}: {err}; retrying in {delay_ms // 1000}s")
+            return _stale_value(scope, config, cache)
+        if gate is not None:
+            gate.clear(scope.key)
         if cache:
             cache.put(scope.key, usage)
+    return render.render(limits.extract(usage), config.limits, config)
+
+
+def _stale_value(scope, config, cache):
+    """Last known numbers while the account is rate limited. Past the cap, the row goes quiet.
+
+    Not renewing beats clearing: the token's own TTL then retires the row on its own schedule.
+    """
+    entry = cache.peek(scope.key) if cache is not None else None
+    if entry is None:
+        return None
+    usage, age_ms = entry
+    if age_ms > config.max_stale_ms:
+        return None
     return render.render(limits.extract(usage), config.limits, config)
 
 
@@ -142,13 +166,29 @@ def build_cache(cfg, env=None, now_ms=None):
     return UsageCache(state_dir(env) / CACHE_DIR_NAME, ttl_ms=cfg.cache_ttl_ms, now_ms=now_ms)
 
 
+def build_gate(cfg, env=None, now_ms=None):
+    return RetryGate(
+        state_dir(env) / GATE_DIR_NAME,
+        base_delay_ms=cfg.backoff_base_ms,
+        max_delay_ms=cfg.backoff_max_ms,
+        now_ms=now_ms,
+    )
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     force = "--force" in argv
     env = os.environ
     cfg = config.load_from_env(env, log=_stderr)
     herdr = Herdr(bin_path=default_bin_path(env))
-    refresh_quietly(herdr, config=cfg, env=env, cache=build_cache(cfg, env), force=force)
+    refresh_quietly(
+        herdr,
+        config=cfg,
+        env=env,
+        cache=build_cache(cfg, env),
+        gate=build_gate(cfg, env),
+        force=force,
+    )
     return 0
 
 

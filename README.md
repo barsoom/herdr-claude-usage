@@ -113,22 +113,44 @@ description = "refresh Claude usage"
 Reported tokens carry a TTL of 2.5× the poll interval. That is deliberate: if the loop dies, the row
 **disappears** rather than showing numbers that quietly went stale.
 
+## Rate limits
+
+`GET /api/oauth/usage` is one per-account budget, and Claude Code's own `/usage` view spends from the
+same one. Poll it hard enough and both break: the plugin's row blanks on `HTTP 429`, and `/usage`
+starts reporting its per-model breakdown as unavailable. The defaults exist to stay well clear of
+that — a 5 minute interval, and three things the plugin does when a request fails anyway:
+
+| | |
+| --- | --- |
+| backs off | The scope waits one interval, then doubles per failure up to `backoff_max_seconds`. Rejected requests still cost budget, so retrying at the poll interval is what keeps an account locked out. |
+| serves stale | The row keeps its last known numbers for `max_stale_seconds` instead of blanking, then stops renewing and lets the TTL retire it. |
+| stays put | The backoff is on disk, per account, so the event hook and the action inherit it instead of each spending a fresh request. |
+
+The `refresh` action ignores the backoff: it is user-initiated, and one deliberate request is the
+point of it. Lower `interval_seconds` at your own risk — it is also the backoff's first step.
+
 ## Config
 
 `$(herdr plugin config-dir barsoom.claude-usage)/config.json`. Every key is optional.
 
 ```json
 {
-  "interval_seconds": 60,
+  "interval_seconds": 300,
   "limits": ["5h", "1w", "Fable"],
   "separator": " · ",
   "token_name": "claude_usage",
   "style": "text",
-  "bar_width": 10
+  "bar_width": 10,
+  "backoff_max_seconds": 1800,
+  "max_stale_seconds": 1800
 }
 ```
 
-- `interval_seconds` — poll interval, clamped to 15..3600.
+- `interval_seconds` — poll interval, clamped to 60..3600. Also the first backoff step.
+- `backoff_max_seconds` — ceiling on the doubling backoff after a failed request, clamped to
+  60..21600. Never shorter than one interval.
+- `max_stale_seconds` — how long a rate-limited row keeps showing its last known numbers, clamped to
+  0..86400. `0` blanks the row the moment a request fails.
 - `limits` — whitelist *and* display order. `5h` is the session window, `1w` the all-model weekly
   window; any other entry matches a model-scoped weekly window by its display name, so plans with
   per-model caps can ask for `"Opus"` or `"Sonnet"`. Windows your account does not have are dropped
@@ -199,7 +221,7 @@ detaching, so `plugin log list` tells you where to look.
 python3 -m unittest discover -s tests -t .
 ```
 
-151 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
+180 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
 opener, `/proc`, the clock — is injected.
 
 ```
@@ -212,6 +234,7 @@ claude_usage/
   limits.py    usage JSON -> {label: percent}
   render.py    {label: percent} -> token value, text or sextant bars
   herdr.py     herdr CLI wrapper
+  gate.py      per-scope retry backoff, on disk so every entry point shares it
   refresh.py   one pass over every claude pane
   daemon.py    poll loop, pidfile takeover, orphan guard
 ```

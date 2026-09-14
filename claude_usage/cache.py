@@ -16,18 +16,28 @@ class UsageCache:
         digest = hashlib.sha1(str(key).encode("utf-8")).hexdigest()
         return self.directory / f"{digest}.json"
 
-    def get(self, key):
+    def peek(self, key):
+        """(usage, age_ms) whatever the age, or None. Lets a caller serve a stale value knowingly."""
         try:
             raw = json.loads(self._path(key).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
         fetched = raw.get("fetched_ms") if isinstance(raw, dict) else None
-        if not isinstance(fetched, (int, float)):
+        if not isinstance(fetched, (int, float)) or isinstance(fetched, bool):
             return None
-        if self._now_ms() - fetched > self.ttl_ms:
+        usage = raw.get("usage") if isinstance(raw, dict) else None
+        if not isinstance(usage, dict):
             return None
-        usage = raw.get("usage")
-        return usage if isinstance(usage, dict) else None
+        return (usage, self._now_ms() - fetched)
+
+    def get(self, key, ttl_ms=None):
+        """Fresh value only. `ttl_ms` overrides the built-in one, for a slower idle cadence."""
+        entry = self.peek(key)
+        if entry is None:
+            return None
+        usage, age_ms = entry
+        limit = self.ttl_ms if ttl_ms is None else ttl_ms
+        return None if age_ms > limit else usage
 
     def put(self, key, usage):
         payload = json.dumps({"fetched_ms": self._now_ms(), "usage": usage})

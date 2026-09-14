@@ -52,3 +52,22 @@ class Cache(unittest.TestCase):
         c = UsageCache(Path("/proc/nonexistent/cache"), ttl_ms=1000, now_ms=lambda: self.now)
         c.put("k", {"a": 1})
         self.assertIsNone(c.get("k"))
+
+    def test_peek_returns_an_expired_entry_with_its_age(self):
+        self.cache().put("k", {"a": 1})
+        self.now += 90_000
+        self.assertEqual(self.cache().peek("k"), ({"a": 1}, 90_000))
+
+    def test_peek_of_an_unknown_key_yields_none(self):
+        self.assertIsNone(self.cache().peek("never-written"))
+
+    def test_peek_of_a_corrupt_entry_yields_none(self):
+        self.cache().put("k", {"a": 1})
+        next(self.dir.iterdir()).write_text("{ broken", encoding="utf-8")
+        self.assertIsNone(self.cache().peek("k"))
+
+    def test_get_honours_a_tighter_ttl_than_the_cache_was_built_with(self):
+        self.cache().put("k", {"a": 1})
+        self.now += 30_000
+        self.assertEqual(self.cache().get("k"), {"a": 1})
+        self.assertIsNone(self.cache().get("k", ttl_ms=20_000))

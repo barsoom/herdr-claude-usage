@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import config
 from .herdr import Herdr, default_bin_path
-from .refresh import build_cache, refresh_quietly, state_dir
+from .refresh import build_cache, build_gate, refresh_quietly, state_dir
 
 PIDFILE_NAME = "daemon.pid"
 LOGFILE_NAME = "daemon.log"
@@ -161,9 +161,10 @@ def main(argv=None):
 
     herdr = Herdr(bin_path=default_bin_path(env))
     cache = build_cache(cfg, env)
+    gate = build_gate(cfg, env)
     try:
         run_loop(
-            tick=lambda: refresh_quietly(herdr, config=cfg, env=env, cache=cache),
+            tick=lambda: refresh_quietly(herdr, config=cfg, env=env, cache=cache, gate=gate),
             interval_seconds=cfg.interval_seconds,
             should_continue=lambda: server_alive(env),
         )

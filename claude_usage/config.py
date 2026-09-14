@@ -8,9 +8,18 @@ from pathlib import Path
 CONFIG_FILE_NAME = "config.json"
 SOURCE_ID = "barsoom.claude-usage"
 
-DEFAULT_INTERVAL_SECONDS = 60
-MIN_INTERVAL_SECONDS = 15
+# The usage endpoint is one per-account budget shared with Claude Code's own /usage view, so the
+# poll loop has to leave headroom. A minute of polling drains it and keeps it drained.
+DEFAULT_INTERVAL_SECONDS = 300
+MIN_INTERVAL_SECONDS = 60
 MAX_INTERVAL_SECONDS = 3600
+DEFAULT_BACKOFF_MAX_SECONDS = 1800
+MIN_BACKOFF_MAX_SECONDS = 60
+MAX_BACKOFF_MAX_SECONDS = 21_600
+# How long a rate-limited row may keep showing the last number it knew before going quiet.
+DEFAULT_MAX_STALE_SECONDS = 1800
+MIN_MAX_STALE_SECONDS = 0
+MAX_MAX_STALE_SECONDS = 86_400
 DEFAULT_LIMITS = ["5h", "1w", "Fable"]
 DEFAULT_SEPARATOR = " · "
 DEFAULT_TOKEN_NAME = "claude_usage"
@@ -36,6 +45,8 @@ class Config:
     token_name: str = DEFAULT_TOKEN_NAME
     style: str = DEFAULT_STYLE
     bar_width: int = DEFAULT_BAR_WIDTH
+    backoff_max_seconds: int = DEFAULT_BACKOFF_MAX_SECONDS
+    max_stale_seconds: int = DEFAULT_MAX_STALE_SECONDS
 
     @property
     def ttl_ms(self):
@@ -45,6 +56,19 @@ class Config:
     @property
     def cache_ttl_ms(self):
         return self.interval_seconds * 1000
+
+    @property
+    def backoff_base_ms(self):
+        """First hold-off after a failure. One wasted request per interval is already too many."""
+        return self.interval_seconds * 1000
+
+    @property
+    def backoff_max_ms(self):
+        return max(self.backoff_max_seconds * 1000, self.backoff_base_ms)
+
+    @property
+    def max_stale_ms(self):
+        return self.max_stale_seconds * 1000
 
 
 def _clamp(value, low, high):
@@ -91,6 +115,14 @@ def load(config_dir, log=None):
     bar_width = raw.get("bar_width")
     if isinstance(bar_width, int) and not isinstance(bar_width, bool):
         cfg.bar_width = _clamp(bar_width, MIN_BAR_WIDTH, MAX_BAR_WIDTH)
+
+    backoff = raw.get("backoff_max_seconds")
+    if isinstance(backoff, int) and not isinstance(backoff, bool):
+        cfg.backoff_max_seconds = _clamp(backoff, MIN_BACKOFF_MAX_SECONDS, MAX_BACKOFF_MAX_SECONDS)
+
+    stale = raw.get("max_stale_seconds")
+    if isinstance(stale, int) and not isinstance(stale, bool):
+        cfg.max_stale_seconds = _clamp(stale, MIN_MAX_STALE_SECONDS, MAX_MAX_STALE_SECONDS)
 
     return cfg
 

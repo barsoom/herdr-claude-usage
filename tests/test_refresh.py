@@ -265,3 +265,101 @@ class BarsStyle(PaneCase):
         report = self.reports(runner)[0]
         expected = render.render_bars(limits.extract(usage()), self.cfg.limits, 8)
         self.assertEqual(report[report.index("--token") + 1], f"claude_usage={expected}")
+
+
+class RateLimited(PaneCase):
+    """429 is the normal weather on this endpoint: the row must survive it, and back off."""
+
+    def setUp(self):
+        super().setUp()
+        import tempfile
+
+        from claude_usage.cache import UsageCache
+        from claude_usage.gate import RetryGate
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.now = 1_000_000
+        now_ms = lambda: self.now
+        self.cache = UsageCache(Path(tmp.name) / "cache", ttl_ms=self.cfg.cache_ttl_ms, now_ms=now_ms)
+        self.gate = RetryGate(
+            Path(tmp.name) / "gate",
+            base_delay_ms=self.cfg.backoff_base_ms,
+            max_delay_ms=self.cfg.backoff_max_ms,
+            now_ms=now_ms,
+        )
+
+    def run_refresh(self, runner, **kw):
+        kw.setdefault("cache", self.cache)
+        kw.setdefault("gate", self.gate)
+        return super().run_refresh(runner, **kw)
+
+    def rate_limited(self):
+        return {"tok": api.UsageApiError("HTTP 429", status=429)}
+
+    def seed(self, **kw):
+        self.cache.put("/home/x/.claude", usage(**kw))
+
+    def token_of(self, runner):
+        report = self.reports(runner)[0]
+        return report[report.index("--token") + 1]
+
+    def test_a_failed_fetch_keeps_showing_the_last_good_value(self):
+        self.seed(session=1, weekly=2, fable=3)
+        self.now += self.cfg.cache_ttl_ms + 1
+        runner = self.runner_with([agent("w1:p1")])
+        self.assertEqual(self.run_refresh(runner, usages=self.rate_limited()), 1)
+        self.assertEqual(self.token_of(runner), "claude_usage=5h 1% · 1w 2% · Fable 3%")
+
+    def test_a_value_too_old_to_trust_is_left_to_expire(self):
+        self.seed()
+        self.now += self.cfg.max_stale_ms + 1
+        runner = self.runner_with([agent("w1:p1")])
+        self.run_refresh(runner, usages=self.rate_limited())
+        self.assertEqual(self.reports(runner), [])
+
+    def test_a_failure_with_nothing_cached_leaves_the_row_to_expire(self):
+        runner = self.runner_with([agent("w1:p1")])
+        self.run_refresh(runner, usages=self.rate_limited())
+        self.assertEqual(self.reports(runner), [])
+
+    def test_a_failure_holds_off_the_next_request(self):
+        runner = self.runner_with([agent("w1:p1")])
+        self.run_refresh(runner, usages=self.rate_limited())
+        self.now += self.cfg.backoff_base_ms - 1
+        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.assertEqual(len(self.fetched), 1)
+
+    def test_the_hold_off_expires(self):
+        runner = self.runner_with([agent("w1:p1")])
+        self.run_refresh(runner, usages=self.rate_limited())
+        self.now += self.cfg.backoff_base_ms + 1
+        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.assertEqual(len(self.fetched), 2)
+
+    def test_a_success_lifts_the_hold_off(self):
+        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.now += self.cfg.backoff_base_ms + 1
+        self.run_refresh(self.runner_with([agent("w1:p1")]))
+        self.now += self.cfg.cache_ttl_ms + 1
+        self.run_refresh(self.runner_with([agent("w1:p1")]))
+        self.assertEqual(len(self.fetched), 3)
+
+    def test_the_manual_action_ignores_the_hold_off(self):
+        """User-initiated, so it is allowed to spend the one request the backoff was saving."""
+        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.run_refresh(self.runner_with([agent("w1:p1")]), force=True)
+        self.assertEqual(len(self.fetched), 2)
+
+    def test_a_held_off_scope_still_serves_its_cached_value(self):
+        self.seed(session=4, weekly=5, fable=6)
+        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.now += self.cfg.cache_ttl_ms + 1
+        runner = self.runner_with([agent("w1:p1")])
+        self.run_refresh(runner, usages=self.rate_limited())
+        self.assertEqual(len(self.fetched), 1)
+        self.assertEqual(self.token_of(runner), "claude_usage=5h 4% · 1w 5% · Fable 6%")
+
+    def test_the_backoff_delay_is_logged(self):
+        self.run_refresh(self.runner_with([agent("w1:p1")]), usages=self.rate_limited())
+        self.assertTrue(any("429" in line and "retrying" in line for line in self.logged))
