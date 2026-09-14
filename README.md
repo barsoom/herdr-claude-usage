@@ -228,7 +228,7 @@ detaching, so `plugin log list` tells you where to look.
 python3 -m unittest discover -s tests -t .
 ```
 
-190 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
+195 tests, no network and no live Herdr server: every outward effect — the `herdr` CLI, the HTTP
 opener, `/proc`, the clock — is injected.
 
 ```
@@ -241,6 +241,7 @@ claude_usage/
   limits.py    usage JSON -> {label: percent}
   render.py    {label: percent} -> token value, text or sextant bars
   herdr.py     herdr CLI wrapper
+  log.py       timestamped stderr lines
   gate.py      per-scope retry backoff, on disk so every entry point shares it
   refresh.py   one pass over every claude pane
   daemon.py    poll loop, pidfile takeover, orphan guard

@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import config
+from . import config, log
 from .herdr import Herdr, default_bin_path
 from .refresh import build_cache, build_gate, refresh_quietly, state_dir
 
@@ -20,7 +20,7 @@ TAKEOVER_POLL_S = 0.1
 
 
 def _stderr(message):
-    print(f"claude-usage daemon: {message}", file=sys.stderr)
+    log.stderr(message, source="claude-usage daemon")
 
 
 def read_pidfile(path):

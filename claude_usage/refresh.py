@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import api, config, creds, limits, procenv, render
+from . import api, config, creds, limits, log, procenv, render
 from .cache import UsageCache
 from .gate import RetryGate
 from .herdr import Herdr, HerdrError, default_bin_path
@@ -20,7 +20,7 @@ GATE_DIR_NAME = "gate"
 
 
 def _stderr(message):
-    print(f"claude-usage: {message}", file=sys.stderr)
+    log.stderr(message)
 
 
 def claude_panes(herdr):
